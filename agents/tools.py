@@ -128,25 +128,6 @@ def explain_metric(metric_name: str, metric_value: Any, context: Optional[str] =
     return explanation
 
 
-def ask_followup_question(question_text: str) -> str:
-    """
-    Ask a supportive follow-up question to better understand the user.
-    
-    Args:
-        question_text: The question to ask
-    
-    Returns:
-        Formatted question string
-    """
-    logger.debug(f"ask_followup_question called: {question_text}")
-    
-    # Format as a supportive question
-    formatted = f"I'd like to understand your situation better. {question_text}"
-    
-    logger.info("Follow-up question formatted")
-    return formatted
-
-
 def log_tool_call(tool_name: str, args: Dict[str, Any], result: Any) -> None:
     """
     Log tool calls for debugging.

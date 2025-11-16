@@ -11,9 +11,10 @@ from agents.prompt import ROOT_AGENT_SYSTEM_PROMPT
 from agents.tools import (
     draft_email_for_mckinley,
     explain_metric,
-    ask_followup_question,
     log_tool_call
 )
+from agents.writing_agent import WritingAgent
+from agents.testing_agent import TestingAgent
 
 # Set up logging
 logging.basicConfig(level=logging.DEBUG)
@@ -48,6 +49,10 @@ class RootAgent:
         # Initialize agent
         system_prompt = f"{ROOT_AGENT_SYSTEM_PROMPT}\n\n{self.context}"
         self.agent_config = create_root_agent(system_prompt)
+        
+        # Initialize child agents
+        self.writing_agent = WritingAgent()
+        self.testing_agent = TestingAgent()
         
         # Conversation history
         self.conversation_history: List[Dict[str, str]] = []
@@ -85,7 +90,7 @@ Not a diagnosis."""
         
         return context
     
-    def process_message(self, user_message: str) -> Dict[str, Any]:
+    def process_message(self, user_message: str, current_email_draft: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
         """
         Process a user message and return agent response.
         
@@ -109,7 +114,7 @@ Not a diagnosis."""
                 }
             
             # Check for tool calls based on user intent
-            tool_result = self._check_tool_calls(user_message)
+            tool_result = self._check_tool_calls(user_message, current_email_draft)
             if tool_result:
                 return tool_result
             
@@ -145,9 +150,54 @@ Not a diagnosis."""
                 "tool_called": None
             }
     
-    def _check_tool_calls(self, user_message: str) -> Optional[Dict[str, Any]]:
+    def _check_tool_calls(self, user_message: str, current_email_draft: Optional[Dict[str, str]] = None) -> Optional[Dict[str, Any]]:
         """Check if user message triggers a tool call."""
         message_lower = user_message.lower()
+        
+        # IMPORTANT: Check for send request FIRST, before edit detection
+        # This prevents "send" from being interpreted as an edit request
+        if current_email_draft:
+            send_phrases = [
+                "send", "send it", "send that", "send the email", "send that email",
+                "yes send", "yes, send", "go ahead and send", "please send",
+                "i want you to send", "send now", "send email"
+            ]
+            # Check if message is primarily about sending (not editing)
+            is_send_request = (
+                any(phrase in message_lower for phrase in send_phrases) and
+                not any(word in message_lower for word in ["edit", "change", "revise", "update", "modify", "add", "remove"])
+            )
+            if is_send_request:
+                # Don't handle send here - let runner.py handle it after processing
+                # Just return None so the message gets processed normally
+                return None
+        
+        # Check if user wants to edit existing email draft
+        if current_email_draft:
+            edit_keywords = ["change", "edit", "revise", "update", "modify", "add", "remove", "shorten", "tone", "formal", "name", "netid"]
+            if any(keyword in message_lower for keyword in edit_keywords):
+                logger.info("Email edit request detected")
+                try:
+                    edited_draft = self.writing_agent.edit_email_draft(
+                        current_draft=current_email_draft,
+                        user_request=user_message,
+                        conversation_history=self.conversation_history[-5:]  # Last 5 messages for context
+                    )
+                    log_tool_call("edit_email_draft", {"request": user_message}, edited_draft)
+                    
+                    return {
+                        "response": "I've updated the email draft. Review it below. You can ask for more changes or say 'yes, send it' when ready.",
+                        "should_end": False,
+                        "tool_called": "edit_email",
+                        "email_draft": edited_draft
+                    }
+                except Exception as e:
+                    logger.error(f"Error editing email: {e}")
+                    return {
+                        "response": f"I had trouble editing the email: {str(e)}. Please try rephrasing your request.",
+                        "should_end": False,
+                        "tool_called": None
+                    }
         
         # Check for email draft request - work regardless of risk score if user explicitly asks
         email_keywords = ["email", "mckinley", "referral", "draft", "send"]
@@ -171,7 +221,7 @@ Not a diagnosis."""
                 log_tool_call("draft_email_for_mckinley", {}, email_result)
                 
                 return {
-                    "response": "Here's your email draft. Review it below, then let me know if you'd like me to send it.",
+                    "response": "Here's your email draft. Review it below. You can ask me to edit it (e.g., 'add my name', 'make it more formal', 'shorten it') or say 'yes, send it' when ready.",
                     "should_end": False,
                     "tool_called": "draft_email",
                     "email_draft": email_result

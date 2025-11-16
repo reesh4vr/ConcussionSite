@@ -313,6 +313,16 @@ HTML_TEMPLATE = """
             color: #5d4037;
         }
         
+        .email-draft .email-edit-hint {
+            margin-top: 16px;
+            padding-top: 12px;
+            border-top: 1px solid rgba(255, 193, 7, 0.2);
+            font-size: 13px;
+            color: #7f5539;
+            font-style: italic;
+            opacity: 0.8;
+        }
+        
         .email-loading {
             display: inline-flex;
             align-items: center;
@@ -489,17 +499,27 @@ HTML_TEMPLATE = """
 
         function addEmailDraft(emailData) {
             const chatArea = document.getElementById('chatArea');
+            
+            // Remove any existing email drafts to avoid duplicates
+            const existingDrafts = chatArea.querySelectorAll('.email-draft');
+            existingDrafts.forEach(draft => draft.remove());
+            
             const draftDiv = document.createElement('div');
             draftDiv.className = 'email-draft';
             
             // Handle both old string format and new structured format
             if (typeof emailData === 'string') {
-                draftDiv.textContent = emailData;
+                draftDiv.innerHTML = `
+                    <div class="email-subject">Email Draft</div>
+                    <div class="email-body">${emailData}</div>
+                    <div class="email-edit-hint">💡 You can ask me to edit this email. Try: "add my name", "make it more formal", or "shorten it"</div>
+                `;
             } else {
                 // New structured format
                 draftDiv.innerHTML = `
                     <div class="email-subject">${emailData.subject || 'Email Draft'}</div>
                     <div class="email-body">${emailData.body || ''}</div>
+                    <div class="email-edit-hint">💡 You can ask me to edit this email. Try: "add my name", "make it more formal", or "shorten it"</div>
                 `;
             }
             
@@ -583,14 +603,30 @@ def handle_message():
     
     logger.debug(f"Received message: {user_message}")
     
-    # Process message first
-    result = root_agent.process_message(user_message)
+    # Process message first - pass current email draft for editing support
+    result = root_agent.process_message(user_message, current_email_draft)
     
     # Handle email sending confirmation (check after processing)
     message_lower = user_message.lower()
+    
+    # Check for explicit send confirmation (only if draft exists)
     if current_email_draft:
-        # Check if user wants to send the email
-        if any(word in message_lower for word in ["yes", "send", "send it", "go ahead", "please send", "send now"]):
+        # Check if user wants to send the email - be more lenient with detection
+        send_keywords = [
+            "yes, send", "yes send", "send it", "go ahead and send", "please send", 
+            "send now", "send the email", "send that email", "send email",
+            "i want you to send", "send that", "go ahead", "send"
+        ]
+        # Also check for standalone "send" if draft exists
+        message_stripped = message_lower.strip()
+        wants_to_send = (
+            any(phrase in message_lower for phrase in send_keywords) or
+            (message_stripped == "send") or
+            (message_stripped == "yes" and current_email_draft) or
+            ("send" in message_lower and "draft" not in message_lower and "edit" not in message_lower)
+        )
+        
+        if wants_to_send:
             logger.info("User confirmed email send")
             
             # Handle both old string format and new structured format
@@ -602,7 +638,7 @@ def handle_message():
                 body = current_email_draft
             
             success, message = send_email_oauth(
-                recipient="gvndbalakrishnan@gmail.com",
+                recipient="healthcenter@illinois.edu",
                 subject=subject,
                 body=body
             )
@@ -612,7 +648,7 @@ def handle_message():
                 current_email_draft = None  # Clear draft after sending
             else:
                 result["response"] = f"Failed to send email: {message}\n\nYou can copy the email draft above and send it manually, or visit https://www.mckinley.illinois.edu/"
-        elif any(word in message_lower for word in ["no", "cancel", "don't send", "skip", "not now"]):
+        elif any(word in message_lower for word in ["no", "cancel", "don't send", "skip", "not now"]) and "send" not in message_lower:
             result["response"] = "No problem. The email draft is saved above if you want to send it manually later. Anything else I can help with?"
             current_email_draft = None
     
